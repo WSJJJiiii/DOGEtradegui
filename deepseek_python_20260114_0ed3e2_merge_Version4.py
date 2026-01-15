@@ -572,10 +572,16 @@ class SimpleDogeAutoTrader:
         rsi_period: int = 14,
         position_scale: float = 0.1,
         min_qty: float = 1.0,
-        min_divisor: float = 1e-9,
+        zero_division_guard: float = 1e-9,
         confidence_bounds: Tuple[float, float] = (0.05, 0.95),
         confidence_weights: Tuple[float, float] = (0.6, 0.4)
     ):
+        """
+        初始化简化交易器。
+        zero_division_guard: 避免价格/均值为0时出现除零错误
+        confidence_bounds: 置信度上下限 (low, high)
+        confidence_weights: 置信度权重 (趋势权重, RSI权重)
+        """
         self.client = BinanceClient(api_key, api_secret, proxy)
         self.symbol = symbol
         self.interval = interval
@@ -590,7 +596,7 @@ class SimpleDogeAutoTrader:
         self.rsi_period = rsi_period
         self.position_scale = position_scale
         self.min_qty = min_qty
-        self.min_divisor = min_divisor
+        self.zero_division_guard = zero_division_guard
         self.conf_low, self.conf_high = confidence_bounds
         self.trend_weight, self.rsi_weight = confidence_weights
     
@@ -603,7 +609,9 @@ class SimpleDogeAutoTrader:
         return mapping.get(self.interval, '1T')
     
     def _fallback_frame(self):
-        """生成备用模拟数据，当无法获取实盘数据时使用"""
+        """生成备用模拟数据，当无法获取实盘数据时使用。
+        价格随机游走: 均值0, 标准差0.002；成交量使用对数正态(mean=10, sigma=1)。
+        """
         base_price = self.client.get_price(self.symbol)
         if not base_price or base_price <= 0:
             base_price = 0.08
@@ -648,7 +656,7 @@ class SimpleDogeAutoTrader:
         loss = -delta.clip(upper=0)
         avg_gain = gain.rolling(self.rsi_period).mean()
         avg_loss = loss.rolling(self.rsi_period).mean()
-        avg_loss = avg_loss.where(avg_loss != 0, self.min_divisor)
+        avg_loss = avg_loss.clip(lower=self.zero_division_guard)
         rs = avg_gain / avg_loss
         frame['rsi'] = 100 - (100 / (1 + rs))
         
@@ -659,7 +667,7 @@ class SimpleDogeAutoTrader:
         """基于简化指标生成交易信号"""
         latest = frame.iloc[-1]
         price = float(latest['close'])
-        safe_price = price if price > 0 else self.min_divisor
+        safe_price = price if price > 0 else self.zero_division_guard
         trend_gap = latest['ma_short'] - latest['ma_long']
         rsi = latest['rsi']
         
@@ -677,7 +685,8 @@ class SimpleDogeAutoTrader:
         
         # 使用账户指定比例资金作为目标仓位
         target_value = self.balance * self.position_scale
-        suggested_qty = max(target_value / safe_price if safe_price > 0 else 0, 0)
+        qty_base = target_value / safe_price if safe_price > 0 else 0
+        suggested_qty = max(qty_base, 0)
         
         return {
             'timestamp': datetime.now(),
