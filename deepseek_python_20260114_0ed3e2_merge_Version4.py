@@ -3338,6 +3338,7 @@ class CompleteTradingGUI:
         self.is_initialized = False
         self.update_interval = 2000  # GUI更新间隔（毫秒）
         self.trading_interval = 30000  # 交易检查间隔（毫秒）
+        self.gui_update_failures = 0
         
         # GUI组件
         self.frames = {}
@@ -4997,13 +4998,18 @@ class CompleteTradingGUI:
     
     def schedule_gui_update(self):
         """计划GUI更新循环"""
+        delay = self.update_interval
         try:
             self.update_gui()
+            self.gui_update_failures = 0
         except Exception as e:
+            self.gui_update_failures += 1
             self.log_message(f"GUI调度失败: {e}", "ERROR")
+            if self.gui_update_failures >= 3:
+                delay = max(self.update_interval * 3, 10000)
         finally:
             # 使用after定时触发下一次更新
-            self.root.after(self.update_interval, self.schedule_gui_update)
+            self.root.after(delay, self.schedule_gui_update)
     
     def schedule_trading_cycle(self):
         """计划交易循环"""
