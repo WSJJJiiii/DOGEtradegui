@@ -566,7 +566,12 @@ class SimpleDogeAutoTrader:
         interval: str = "5m",
         lookback: int = 120,
         initial_balance: float = 1000.0,
-        live: bool = False
+        live: bool = False,
+        ma_short: int = 12,
+        ma_long: int = 36,
+        rsi_period: int = 14,
+        position_scale: float = 0.1,
+        min_qty: float = 1.0
     ):
         self.client = BinanceClient(api_key, api_secret, proxy)
         self.symbol = symbol
@@ -577,6 +582,11 @@ class SimpleDogeAutoTrader:
         self.live = live
         self.position_qty = 0.0
         self.entry_price = 0.0
+        self.ma_short = ma_short
+        self.ma_long = ma_long
+        self.rsi_period = rsi_period
+        self.position_scale = position_scale
+        self.min_qty = min_qty
     
     def _interval_freq(self):
         """根据interval返回pandas频率字符串"""
@@ -588,15 +598,19 @@ class SimpleDogeAutoTrader:
     
     def _fallback_frame(self):
         """使用简单随机游走生成模拟数据，保持与深度模型一致的数据结构"""
+        base_price = self.client.get_price(self.symbol)
+        if not base_price or base_price <= 0:
+            base_price = 0.08
+        
         timestamps = pd.date_range(
             end=datetime.now(),
             periods=self.lookback,
             freq=self._interval_freq()
         )
-        np.random.seed(42)
-        returns = np.random.normal(0, 0.002, len(timestamps))
-        prices = 0.08 * np.exp(np.cumsum(returns))
-        volumes = np.random.lognormal(mean=10, sigma=1, size=len(timestamps))
+        rng = np.random.default_rng()
+        returns = rng.normal(0, 0.002, len(timestamps))
+        prices = base_price * np.exp(np.cumsum(returns))
+        volumes = rng.lognormal(mean=10, sigma=1, size=len(timestamps))
         df = pd.DataFrame({
             'close_time': timestamps,
             'close': prices,
@@ -620,15 +634,16 @@ class SimpleDogeAutoTrader:
     def _apply_indicators(self, df: pd.DataFrame):
         """计算简化指标（短长均线 + RSI）"""
         frame = df.copy()
-        frame['ma_short'] = frame['close'].rolling(12).mean()
-        frame['ma_long'] = frame['close'].rolling(36).mean()
+        frame['ma_short'] = frame['close'].rolling(self.ma_short).mean()
+        frame['ma_long'] = frame['close'].rolling(self.ma_long).mean()
         
         delta = frame['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
-        rs = avg_gain / (avg_loss.replace(0, 1e-9))
+        avg_gain = gain.rolling(self.rsi_period).mean()
+        avg_loss = loss.rolling(self.rsi_period).mean()
+        avg_loss = avg_loss.where(avg_loss != 0, 1e-9)
+        rs = avg_gain / avg_loss
         frame['rsi'] = 100 - (100 / (1 + rs))
         
         frame = frame.dropna()
@@ -652,8 +667,8 @@ class SimpleDogeAutoTrader:
             abs(rsi - 50) / 50 * 0.4
         ))
         
-        # 使用账户10%资金作为目标仓位
-        target_value = self.balance * 0.1
+        # 使用账户指定比例资金作为目标仓位
+        target_value = self.balance * self.position_scale
         suggested_qty = max(target_value / latest['close'], 0)
         
         return {
@@ -681,7 +696,7 @@ class SimpleDogeAutoTrader:
         price = signal['price']
         
         if signal['action'] == "BUY" and self.position_qty == 0 and signal['suggested_qty'] > 0:
-            qty = max(signal['suggested_qty'], 1)
+            qty = max(signal['suggested_qty'], self.min_qty)
             api_result = {'success': True}
             if self.live:
                 api_result = self.client.send_order(self.symbol, "BUY", qty, "MARKET")
