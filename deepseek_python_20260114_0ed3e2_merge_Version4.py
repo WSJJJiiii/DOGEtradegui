@@ -571,7 +571,10 @@ class SimpleDogeAutoTrader:
         ma_long: int = 36,
         rsi_period: int = 14,
         position_scale: float = 0.1,
-        min_qty: float = 1.0
+        min_qty: float = 1.0,
+        min_divisor: float = 1e-9,
+        confidence_bounds: Tuple[float, float] = (0.05, 0.95),
+        confidence_weights: Tuple[float, float] = (0.6, 0.4)
     ):
         self.client = BinanceClient(api_key, api_secret, proxy)
         self.symbol = symbol
@@ -587,6 +590,9 @@ class SimpleDogeAutoTrader:
         self.rsi_period = rsi_period
         self.position_scale = position_scale
         self.min_qty = min_qty
+        self.min_divisor = min_divisor
+        self.conf_low, self.conf_high = confidence_bounds
+        self.trend_weight, self.rsi_weight = confidence_weights
     
     def _interval_freq(self):
         """根据interval返回pandas频率字符串"""
@@ -642,7 +648,7 @@ class SimpleDogeAutoTrader:
         loss = -delta.clip(upper=0)
         avg_gain = gain.rolling(self.rsi_period).mean()
         avg_loss = loss.rolling(self.rsi_period).mean()
-        avg_loss = avg_loss.where(avg_loss != 0, 1e-9)
+        avg_loss = avg_loss.where(avg_loss != 0, self.min_divisor)
         rs = avg_gain / avg_loss
         frame['rsi'] = 100 - (100 / (1 + rs))
         
@@ -653,7 +659,7 @@ class SimpleDogeAutoTrader:
         """基于简化指标生成交易信号"""
         latest = frame.iloc[-1]
         price = float(latest['close'])
-        safe_price = price if price > 0 else 1e-9
+        safe_price = price if price > 0 else self.min_divisor
         trend_gap = latest['ma_short'] - latest['ma_long']
         rsi = latest['rsi']
         
@@ -664,11 +670,9 @@ class SimpleDogeAutoTrader:
             action = "SELL"
         
         # 置信度来源：趋势强度 + RSI偏离度
-        CONF_LOW, CONF_HIGH = 0.05, 0.95
-        TREND_WEIGHT, RSI_WEIGHT = 0.6, 0.4
-        confidence = max(CONF_LOW, min(CONF_HIGH,
-            abs(trend_gap) / safe_price * TREND_WEIGHT +
-            abs(rsi - 50) / 50 * RSI_WEIGHT
+        confidence = max(self.conf_low, min(self.conf_high,
+            abs(trend_gap) / safe_price * self.trend_weight +
+            abs(rsi - 50) / 50 * self.rsi_weight
         ))
         
         # 使用账户指定比例资金作为目标仓位
