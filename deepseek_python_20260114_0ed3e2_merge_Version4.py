@@ -384,9 +384,18 @@ class BinanceClient:
                 timeout=5
             )
             data = response.json()
-            if isinstance(data, dict) and 'price' in data:
-                return float(data['price'])
-            raise KeyError("price")
+            
+            # 支持多种返回格式，优先解析价格字段
+            if isinstance(data, dict):
+                price_val = data.get('price') or data.get('lastPrice')
+                if price_val is not None:
+                    return float(price_val)
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                price_val = data[0].get('price') or data[0].get('lastPrice')
+                if price_val is not None:
+                    return float(price_val)
+            
+            raise KeyError("price_not_found")
         except Exception as e:
             logger.error(f"获取价格失败: {e}")
             # 使用缓存或模拟价格
@@ -1213,6 +1222,16 @@ class CompleteDataManager:
                 return pd.DataFrame()
             
             price_df = self.historical_data['price']['1d'].copy()
+            if not isinstance(price_df.index, pd.DatetimeIndex):
+                if 'open_time' in price_df.columns:
+                    price_df['open_time'] = pd.to_datetime(price_df['open_time'])
+                    price_df.set_index('open_time', inplace=True)
+                elif 'timestamp' in price_df.columns:
+                    price_df['timestamp'] = pd.to_datetime(price_df['timestamp'])
+                    price_df.set_index('timestamp', inplace=True)
+                else:
+                    price_df.index = pd.to_datetime(price_df.index)
+            price_df.sort_index(inplace=True)
             
             # 合并其他数据源
             feature_dfs = [price_df]
@@ -1407,6 +1426,7 @@ class AdvancedFeatureEngineer:
             base_price = 0.08
             returns = np.random.normal(0, 0.02, len(dates))
             prices = base_price * np.exp(np.cumsum(returns))
+            price_series = pd.Series(prices, index=dates)
             
             # 生成技术指标
             df = pd.DataFrame({
@@ -1416,9 +1436,9 @@ class AdvancedFeatureEngineer:
                 'low': prices * (1 - np.random.uniform(0, 0.01, len(dates))),
                 'close': prices,
                 'volume': np.random.lognormal(10, 1, len(dates)) * 10000,
-                'SMA_20': prices.rolling(window=20).mean(),
-                'EMA_12': prices.ewm(span=12).mean(),
-                'EMA_26': prices.ewm(span=26).mean(),
+                'SMA_20': price_series.rolling(window=20).mean(),
+                'EMA_12': price_series.ewm(span=12).mean(),
+                'EMA_26': price_series.ewm(span=26).mean(),
                 'RSI': np.random.uniform(30, 70, len(dates)),
                 'MACD': np.random.uniform(-0.001, 0.001, len(dates)),
                 'BB_upper': prices * 1.02,
@@ -1536,6 +1556,14 @@ class AdvancedFeatureEngineer:
     
     def _create_timeseries_features(self, df):
         """创建时间序列特征"""
+        df = df.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors='coerce')
+        df = df[df.index.notna()]
+        
+        if df.empty:
+            return pd.DataFrame()
+        
         features = pd.DataFrame(index=df.index)
         
         # 时间特征
@@ -3356,6 +3384,7 @@ class CompleteTradingGUI:
         # 设置窗口
         self.root.title("DOGE多因子量化交易系统 - 完整版")
         self.root.geometry("1200x800")
+        self.root.minsize(1200, 800)
         
         # 设置图标
         try:
@@ -3420,13 +3449,13 @@ class CompleteTradingGUI:
         
         # 字体（调整为稍小以适配 1200x800 窗口）
         self.fonts = {
-            'title': tkFont.Font(family="Microsoft YaHei", size=16, weight="bold"),
-            'subtitle': tkFont.Font(family="Microsoft YaHei", size=13, weight="bold"),
-            'heading': tkFont.Font(family="Microsoft YaHei", size=11, weight="bold"),
-            'normal': tkFont.Font(family="Microsoft YaHei", size=10),
-            'small': tkFont.Font(family="Microsoft YaHei", size=9),
-            'mono': tkFont.Font(family="Consolas", size=9),
-            'mono_bold': tkFont.Font(family="Consolas", size=9, weight="bold")
+            'title': tkFont.Font(family="Arial", size=16, weight="bold"),
+            'subtitle': tkFont.Font(family="Arial", size=13, weight="bold"),
+            'heading': tkFont.Font(family="Arial", size=11, weight="bold"),
+            'normal': tkFont.Font(family="Arial", size=10),
+            'small': tkFont.Font(family="Arial", size=9),
+            'mono': tkFont.Font(family="DejaVu Sans Mono", size=9),
+            'mono_bold': tkFont.Font(family="DejaVu Sans Mono", size=9, weight="bold")
         }
         
         # 配置ttk样式
@@ -4742,12 +4771,34 @@ class CompleteTradingGUI:
             foreground=self.colors['text_muted']
         )
         resource_label.pack(side=tk.RIGHT)
+        
+        # 快捷控制按钮
+        button_holder = ttk.Frame(control_frame)
+        button_holder.pack(side=tk.RIGHT, padx=(10, 0))
+        
+        self.widgets['stop_button_footer'] = ttk.Button(
+            button_holder,
+            text="停止交易",
+            command=self.stop_trading_system,
+            style="Danger.TButton",
+            state="disabled"
+        )
+        self.widgets['stop_button_footer'].pack(side=tk.RIGHT, padx=(5, 0))
+        
+        self.widgets['start_button_footer'] = ttk.Button(
+            button_holder,
+            text="开始交易",
+            command=self.start_trading_system,
+            style="Success.TButton"
+        )
+        self.widgets['start_button_footer'].pack(side=tk.RIGHT, padx=(0, 5))
     
     def initialize_system(self):
         """初始化系统"""
         self.variables['system_status'].set("系统初始化中...")
         self.variables['status_message'].set("正在初始化系统...")
         self.log_message("开始系统初始化...", "INFO")
+        self._set_trading_buttons_state("disabled", "disabled")
         
         # 在后台线程中初始化
         def init_thread():
@@ -4807,7 +4858,7 @@ class CompleteTradingGUI:
         self.log_message("系统初始化完成，准备就绪", "SUCCESS")
         
         # 启用开始按钮
-        self.widgets['start_button'].configure(state="normal")
+        self._set_trading_buttons_state("normal", "disabled")
     
     def on_system_init_failed(self, error_msg):
         """系统初始化失败回调"""
@@ -4951,6 +5002,15 @@ class CompleteTradingGUI:
                 value = getattr(config, key, 0)
                 self.widgets[widget_key].set(str(value))
     
+    def _set_trading_buttons_state(self, start_state: str, stop_state: str):
+        """统一更新开始/停止按钮状态"""
+        for key in ['start_button', 'start_button_footer']:
+            if key in self.widgets:
+                self.widgets[key].configure(state=start_state)
+        for key in ['stop_button', 'stop_button_footer']:
+            if key in self.widgets:
+                self.widgets[key].configure(state=stop_state)
+    
     def start_trading_system(self):
         """启动交易系统"""
         if not self.is_initialized:
@@ -4967,8 +5027,7 @@ class CompleteTradingGUI:
         self.variables['status_message'].set("交易系统运行中...")
         
         # 更新按钮状态
-        self.widgets['start_button'].configure(state="disabled")
-        self.widgets['stop_button'].configure(state="normal")
+        self._set_trading_buttons_state("disabled", "normal")
         
         # 启动交易循环
         self.schedule_trading_cycle()
@@ -4987,8 +5046,7 @@ class CompleteTradingGUI:
         self.variables['status_message'].set("交易系统已停止")
         
         # 更新按钮状态
-        self.widgets['start_button'].configure(state="normal")
-        self.widgets['stop_button'].configure(state="disabled")
+        self._set_trading_buttons_state("normal", "disabled")
         
         # 停止数据流
         self.data_manager.stop_real_time_stream()
