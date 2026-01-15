@@ -5023,14 +5023,14 @@ class CompleteTradingGUI:
         """单次GUI更新并计划下一次"""
         delay = self.update_interval
         now = datetime.now()
+        should_reset_failures = False
         
-        # 如果一段时间没有失败，重置计数
+        # 如果一段时间没有失败，标记重置
         if (
             self.gui_last_failure_ts 
             and (now - self.gui_last_failure_ts).total_seconds() * 1000 >= self.gui_backoff_reset_ms
         ):
-            self.gui_update_failures = 0
-            self.gui_last_failure_ts = None
+            should_reset_failures = True
         
         try:
             self.update_gui()
@@ -5039,15 +5039,17 @@ class CompleteTradingGUI:
             self.gui_last_failure_ts = now
             self.log_message(f"GUI调度失败: {e}", "ERROR")
             if self.gui_update_failures >= self.gui_failure_threshold:
-                computed_delay = max(
-                    self.update_interval * self.gui_backoff_multiplier,
-                    self.gui_backoff_min_delay
-                )
+                exponent = self.gui_update_failures - self.gui_failure_threshold + 1
+                computed_delay = self.update_interval * (self.gui_backoff_multiplier ** exponent)
+                computed_delay = max(computed_delay, self.gui_backoff_min_delay)
                 delay = min(computed_delay, self.gui_backoff_max_delay)
         else:
-            if self.gui_update_failures:
-                self.gui_update_failures = 0
+            should_reset_failures = True
+        
         finally:
+            if should_reset_failures and self.gui_update_failures:
+                self.gui_update_failures = 0
+                self.gui_last_failure_ts = None
             # 使用after定时触发下一次更新
             self.root.after(delay, self._gui_update_tick)
     
