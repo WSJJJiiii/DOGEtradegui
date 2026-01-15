@@ -6408,6 +6408,22 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
         except Exception as e:
             self.log_message(f"显示风控设置失败: {e}", "ERROR")
     
+    def analyze_market_trend(self):
+        """市场趋势分析入口"""
+        return self.run_analysis()
+    
+    def analyze_risk(self):
+        """风险分析入口"""
+        return self.run_analysis()
+    
+    def analyze_models(self):
+        """模型评估入口"""
+        return self.run_analysis()
+    
+    def analyze_data_quality(self):
+        """数据质量分析入口"""
+        return self.run_analysis()
+    
     def run_analysis(self):
         """运行分析"""
         self.log_message("开始运行分析...", "INFO")
