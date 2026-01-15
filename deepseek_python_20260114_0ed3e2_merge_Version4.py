@@ -3340,9 +3340,9 @@ class CompleteTradingGUI:
         self.trading_interval = 30000  # 交易检查间隔（毫秒）
         self.gui_update_failures = 0
         self.gui_failure_threshold = 3
+        self.gui_backoff_multiplier = 3
         self.gui_backoff_delay = 10000
         self.gui_update_loop_started = False
-        self.gui_update_failures = 0
         
         # GUI组件
         self.frames = {}
@@ -5019,7 +5019,7 @@ class CompleteTradingGUI:
             self.gui_update_failures += 1
             self.log_message(f"GUI调度失败: {e}", "ERROR")
             if self.gui_update_failures >= self.gui_failure_threshold:
-                delay = max(self.update_interval * 3, self.gui_backoff_delay)
+                delay = max(self.update_interval * self.gui_backoff_multiplier, self.gui_backoff_delay)
         finally:
             # 使用after定时触发下一次更新
             self.root.after(delay, self._gui_update_tick)
