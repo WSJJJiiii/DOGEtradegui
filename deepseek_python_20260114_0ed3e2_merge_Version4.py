@@ -1436,9 +1436,9 @@ class AdvancedFeatureEngineer:
                 'low': prices * (1 - np.random.uniform(0, 0.01, len(dates))),
                 'close': prices,
                 'volume': np.random.lognormal(10, 1, len(dates)) * 10000,
-                'SMA_20': price_series.rolling(window=20).mean(),
-                'EMA_12': price_series.ewm(span=12).mean(),
-                'EMA_26': price_series.ewm(span=26).mean(),
+                'SMA_20': price_series.rolling(window=20, min_periods=1).mean(),
+                'EMA_12': price_series.ewm(span=12, min_periods=1).mean(),
+                'EMA_26': price_series.ewm(span=26, min_periods=1).mean(),
                 'RSI': np.random.uniform(30, 70, len(dates)),
                 'MACD': np.random.uniform(-0.001, 0.001, len(dates)),
                 'BB_upper': prices * 1.02,
@@ -1559,7 +1559,11 @@ class AdvancedFeatureEngineer:
         df = df.copy()
         if not isinstance(df.index, pd.DatetimeIndex):
             df.index = pd.to_datetime(df.index, errors='coerce')
+        original_len = len(df)
         df = df[df.index.notna()]
+        dropped = original_len - len(df)
+        if dropped > 0:
+            logger.warning(f"时间索引转换失败，已丢弃 {dropped} 条无效记录")
         
         if df.empty:
             return pd.DataFrame()
