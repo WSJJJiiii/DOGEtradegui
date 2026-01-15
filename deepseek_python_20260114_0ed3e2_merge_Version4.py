@@ -10,6 +10,7 @@ import json
 import time
 import threading
 import queue
+import argparse
 import hmac
 import hashlib
 import urllib.parse
@@ -546,6 +547,199 @@ class BinanceClient:
             return self._request('GET', endpoint, params, signed=True)
         except:
             return []
+
+# ==================== 简化自动交易器 ====================
+
+class SimpleDogeAutoTrader:
+    """
+    简化版DOGE自动量化交易器
+    - 复用deepseek的轻量数据处理/信号计算方式（均线 + RSI）
+    - 直接调用原始币安接口获取行情并可选择实盘下单
+    """
+    
+    def __init__(
+        self,
+        api_key: str = "",
+        api_secret: str = "",
+        proxy: str = "",
+        symbol: str = "DOGEUSDT",
+        interval: str = "5m",
+        lookback: int = 120,
+        initial_balance: float = 1000.0,
+        live: bool = False
+    ):
+        self.client = BinanceClient(api_key, api_secret, proxy)
+        self.symbol = symbol
+        self.interval = interval
+        self.lookback = lookback
+        self.balance = initial_balance
+        self.initial_balance = initial_balance
+        self.live = live
+        self.position_qty = 0.0
+        self.entry_price = 0.0
+    
+    def _interval_freq(self):
+        """根据interval返回pandas频率字符串"""
+        mapping = {
+            '1m': '1T', '3m': '3T', '5m': '5T', '15m': '15T',
+            '30m': '30T', '1h': '1H', '4h': '4H', '1d': '1D'
+        }
+        return mapping.get(self.interval, '1T')
+    
+    def _fallback_frame(self):
+        """使用简单随机游走生成模拟数据，保持与深度模型一致的数据结构"""
+        timestamps = pd.date_range(
+            end=datetime.now(),
+            periods=self.lookback,
+            freq=self._interval_freq()
+        )
+        np.random.seed(42)
+        returns = np.random.normal(0, 0.002, len(timestamps))
+        prices = 0.08 * np.exp(np.cumsum(returns))
+        volumes = np.random.lognormal(mean=10, sigma=1, size=len(timestamps))
+        df = pd.DataFrame({
+            'close_time': timestamps,
+            'close': prices,
+            'volume': volumes
+        }).set_index('close_time')
+        return df
+    
+    def _fetch_candles(self):
+        """优先使用币安实时K线，失败时退回模拟数据"""
+        df = self.client.get_klines(self.symbol, self.interval, self.lookback)
+        if df is None or df.empty:
+            logger.warning("获取实盘K线失败，使用模拟数据回退")
+            return self._fallback_frame()
+        
+        df = df[['close_time', 'close', 'volume']].copy()
+        df['close_time'] = pd.to_datetime(df['close_time'])
+        df[['close', 'volume']] = df[['close', 'volume']].astype(float)
+        df = df.set_index('close_time')
+        return df
+    
+    def _apply_indicators(self, df: pd.DataFrame):
+        """计算简化指标（短长均线 + RSI）"""
+        frame = df.copy()
+        frame['ma_short'] = frame['close'].rolling(12).mean()
+        frame['ma_long'] = frame['close'].rolling(36).mean()
+        
+        delta = frame['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean()
+        rs = avg_gain / (avg_loss.replace(0, 1e-9))
+        frame['rsi'] = 100 - (100 / (1 + rs))
+        
+        frame = frame.dropna()
+        return frame
+    
+    def _generate_signal(self, frame: pd.DataFrame):
+        """基于简化指标生成交易信号"""
+        latest = frame.iloc[-1]
+        trend_gap = latest['ma_short'] - latest['ma_long']
+        rsi = latest['rsi']
+        
+        action = "HOLD"
+        if trend_gap > 0 and rsi < 70:
+            action = "BUY"
+        elif trend_gap < 0 and rsi > 30 and self.position_qty > 0:
+            action = "SELL"
+        
+        # 置信度来源：趋势强度 + RSI偏离度
+        confidence = max(0.05, min(0.95,
+            abs(trend_gap) / latest['close'] * 0.6 +
+            abs(rsi - 50) / 50 * 0.4
+        ))
+        
+        # 使用账户10%资金作为目标仓位
+        target_value = self.balance * 0.1
+        suggested_qty = max(target_value / latest['close'], 0)
+        
+        return {
+            'timestamp': datetime.now(),
+            'action': action,
+            'confidence': confidence,
+            'price': float(latest['close']),
+            'rsi': float(rsi),
+            'ma_short': float(latest['ma_short']),
+            'ma_long': float(latest['ma_long']),
+            'suggested_qty': float(suggested_qty)
+        }
+    
+    def _execute(self, signal):
+        """根据信号执行下单或模拟交易"""
+        record = {
+            'executed': False,
+            'mode': 'live' if self.live else 'paper',
+            'action': signal['action'],
+            'price': signal['price'],
+            'quantity': 0.0,
+            'pnl': 0.0
+        }
+        
+        price = signal['price']
+        
+        if signal['action'] == "BUY" and self.position_qty == 0 and signal['suggested_qty'] > 0:
+            qty = max(signal['suggested_qty'], 1)
+            api_result = {'success': True}
+            if self.live:
+                api_result = self.client.send_order(self.symbol, "BUY", qty, "MARKET")
+            if api_result.get('success', False):
+                self.position_qty = qty
+                self.entry_price = price
+                self.balance = max(self.balance - qty * price, 0)
+                record.update({'executed': True, 'quantity': qty})
+            else:
+                record['error'] = api_result.get('error', 'order failed')
+        
+        elif signal['action'] == "SELL" and self.position_qty > 0:
+            qty = self.position_qty
+            api_result = {'success': True}
+            if self.live:
+                api_result = self.client.send_order(self.symbol, "SELL", qty, "MARKET")
+            if api_result.get('success', False):
+                pnl = (price - self.entry_price) * qty
+                self.balance += qty * price
+                self.position_qty = 0.0
+                self.entry_price = 0.0
+                record.update({'executed': True, 'quantity': qty, 'pnl': pnl})
+            else:
+                record['error'] = api_result.get('error', 'order failed')
+        
+        return record
+    
+    def summary(self, last_price: float):
+        """返回当前账户与持仓快照"""
+        position_value = self.position_qty * last_price
+        equity = self.balance + position_value
+        return {
+            'balance': round(self.balance, 4),
+            'position_qty': round(self.position_qty, 4),
+            'entry_price': round(self.entry_price, 6),
+            'last_price': round(last_price, 6),
+            'equity': round(equity, 4)
+        }
+    
+    def run_cycle(self):
+        """执行一次完整的获取-计算-交易流程"""
+        candles = self._fetch_candles()
+        if candles.empty:
+            return {'error': 'no market data available'}
+        
+        frame = self._apply_indicators(candles)
+        if frame.empty:
+            return {'error': 'insufficient data for indicators'}
+        
+        signal = self._generate_signal(frame)
+        trade = self._execute(signal)
+        snapshot = self.summary(signal['price'])
+        
+        return {
+            'signal': {**signal, 'timestamp': signal['timestamp'].isoformat()},
+            'trade': trade,
+            'account': snapshot
+        }
 
 # ==================== 数据管理器（完整版） ====================
 
@@ -6720,6 +6914,31 @@ DOGE多因子量化交易系统 v2.0.0
 
 def main():
     """主函数"""
+    parser = argparse.ArgumentParser(description="DOGE量化交易系统")
+    parser.add_argument("--simple", action="store_true", help="运行简化自动量化交易（无GUI）")
+    parser.add_argument("--api-key", default="", help="币安API Key")
+    parser.add_argument("--api-secret", default="", help="币安API Secret")
+    parser.add_argument("--proxy", default="", help="HTTP/HTTPS代理")
+    parser.add_argument("--interval", default="5m", help="K线周期，默认5m")
+    parser.add_argument("--lookback", type=int, default=120, help="拉取的K线数量")
+    parser.add_argument("--balance", type=float, default=1000.0, help="初始资金（模拟）")
+    parser.add_argument("--live", action="store_true", help="启用实盘下单")
+    args, _ = parser.parse_known_args()
+    
+    if args.simple:
+        trader = SimpleDogeAutoTrader(
+            api_key=args.api_key,
+            api_secret=args.api_secret,
+            proxy=args.proxy,
+            interval=args.interval,
+            lookback=args.lookback,
+            initial_balance=args.balance,
+            live=args.live
+        )
+        result = trader.run_cycle()
+        print(json.dumps(result, ensure_ascii=False, default=str))
+        return
+    
     print("=" * 70)
     print("DOGE多因子量化交易系统 - 完整融合版")
     print("=" * 70)
