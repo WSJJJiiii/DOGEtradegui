@@ -1436,9 +1436,9 @@ class AdvancedFeatureEngineer:
                 'low': prices * (1 - np.random.uniform(0, 0.01, len(dates))),
                 'close': prices,
                 'volume': np.random.lognormal(10, 1, len(dates)) * 10000,
-                'SMA_20': price_series.rolling(window=20, min_periods=1).mean(),
-                'EMA_12': price_series.ewm(span=12, min_periods=1).mean(),
-                'EMA_26': price_series.ewm(span=26, min_periods=1).mean(),
+                'SMA_20': price_series.rolling(window=20, min_periods=20).mean(),
+                'EMA_12': price_series.ewm(span=12, min_periods=12).mean(),
+                'EMA_26': price_series.ewm(span=26, min_periods=26).mean(),
                 'RSI': np.random.uniform(30, 70, len(dates)),
                 'MACD': np.random.uniform(-0.001, 0.001, len(dates)),
                 'BB_upper': prices * 1.02,
@@ -1558,11 +1558,7 @@ class AdvancedFeatureEngineer:
         """创建时间序列特征"""
         df = df.copy()
         if not isinstance(df.index, pd.DatetimeIndex):
-            try:
-                df.index = pd.to_datetime(df.index, errors='coerce')
-            except Exception as conversion_error:
-                logger.error(f"时间索引转换异常: {conversion_error}")
-                return pd.DataFrame()
+            df.index = pd.to_datetime(df.index, errors='coerce')
         original_len = len(df)
         df = df[df.index.notna()]
         dropped = original_len - len(df)
@@ -3462,8 +3458,8 @@ class CompleteTradingGUI:
             'heading': tkFont.Font(family="Arial", size=11, weight="bold"),
             'normal': tkFont.Font(family="Arial", size=10),
             'small': tkFont.Font(family="Arial", size=9),
-            'mono': tkFont.Font(family="DejaVu Sans Mono", size=9),
-            'mono_bold': tkFont.Font(family="DejaVu Sans Mono", size=9, weight="bold")
+            'mono': tkFont.Font(family="Courier New", size=9),
+            'mono_bold': tkFont.Font(family="Courier New", size=9, weight="bold")
         }
         
         # 配置ttk样式
