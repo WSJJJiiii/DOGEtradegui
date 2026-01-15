@@ -597,7 +597,7 @@ class SimpleDogeAutoTrader:
         return mapping.get(self.interval, '1T')
     
     def _fallback_frame(self):
-        """使用简单随机游走生成模拟数据，保持与深度模型一致的数据结构"""
+        """生成备用模拟数据，当无法获取实盘数据时使用"""
         base_price = self.client.get_price(self.symbol)
         if not base_price or base_price <= 0:
             base_price = 0.08
@@ -622,7 +622,7 @@ class SimpleDogeAutoTrader:
         """优先使用币安实时K线，失败时退回模拟数据"""
         df = self.client.get_klines(self.symbol, self.interval, self.lookback)
         if df is None or df.empty:
-            logger.warning("获取实盘K线失败，使用模拟数据回退")
+            logger.warning("获取实盘K线失败，使用模拟数据回补")
             return self._fallback_frame()
         
         df = df[['close_time', 'close', 'volume']].copy()
@@ -652,6 +652,8 @@ class SimpleDogeAutoTrader:
     def _generate_signal(self, frame: pd.DataFrame):
         """基于简化指标生成交易信号"""
         latest = frame.iloc[-1]
+        price = float(latest['close'])
+        safe_price = price if price > 0 else 1e-9
         trend_gap = latest['ma_short'] - latest['ma_long']
         rsi = latest['rsi']
         
@@ -662,20 +664,22 @@ class SimpleDogeAutoTrader:
             action = "SELL"
         
         # 置信度来源：趋势强度 + RSI偏离度
-        confidence = max(0.05, min(0.95,
-            abs(trend_gap) / latest['close'] * 0.6 +
-            abs(rsi - 50) / 50 * 0.4
+        CONF_LOW, CONF_HIGH = 0.05, 0.95
+        TREND_WEIGHT, RSI_WEIGHT = 0.6, 0.4
+        confidence = max(CONF_LOW, min(CONF_HIGH,
+            abs(trend_gap) / safe_price * TREND_WEIGHT +
+            abs(rsi - 50) / 50 * RSI_WEIGHT
         ))
         
         # 使用账户指定比例资金作为目标仓位
         target_value = self.balance * self.position_scale
-        suggested_qty = max(target_value / latest['close'], 0)
+        suggested_qty = max(target_value / safe_price if safe_price > 0 else 0, 0)
         
         return {
             'timestamp': datetime.now(),
             'action': action,
             'confidence': confidence,
-            'price': float(latest['close']),
+            'price': price,
             'rsi': float(rsi),
             'ma_short': float(latest['ma_short']),
             'ma_long': float(latest['ma_long']),
