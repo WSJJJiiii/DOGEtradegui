@@ -4995,6 +4995,16 @@ class CompleteTradingGUI:
         
         self.log_message("交易系统已停止", "INFO")
     
+    def schedule_gui_update(self):
+        """计划GUI更新循环"""
+        try:
+            self.update_gui()
+        except Exception as e:
+            self.log_message(f"GUI调度失败: {e}", "ERROR")
+        finally:
+            # 使用after定时触发下一次更新
+            self.root.after(self.update_interval, self.schedule_gui_update)
+    
     def schedule_trading_cycle(self):
         """计划交易循环"""
         if self.is_running:
