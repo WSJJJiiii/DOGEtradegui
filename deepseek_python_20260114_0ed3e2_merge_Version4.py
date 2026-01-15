@@ -1260,7 +1260,7 @@ class CompleteDataManager:
                 features_df = features_df.join(df, how='left', rsuffix=f'_{df.columns[0] if len(df.columns) > 0 else "x"}')
             
             # 填充缺失值
-            features_df = features_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            features_df = features_df.ffill().bfill().fillna(0)
             
             # 限制回看天数
             if lookback_days > 0:
@@ -1458,7 +1458,7 @@ class AdvancedFeatureEngineer:
             })
             
             df.set_index('timestamp', inplace=True)
-            df = df.fillna(method='ffill').fillna(0)
+            df = df.ffill().fillna(0)
             
             return df
             
@@ -1574,7 +1574,8 @@ class AdvancedFeatureEngineer:
         features['hour'] = df.index.hour
         features['day_of_week'] = df.index.dayofweek
         features['day_of_month'] = df.index.day
-        features['week_of_year'] = df.index.isocalendar().week
+        calendar_index = df.index.isocalendar()
+        features['week_of_year'] = calendar_index.week
         features['month'] = df.index.month
         features['quarter'] = df.index.quarter
         
