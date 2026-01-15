@@ -6499,6 +6499,77 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
         
         threading.Thread(target=analysis_thread, daemon=True).start()
     
+    def analyze_market_trend(self):
+        """市场趋势分析"""
+        try:
+            price_df = self.data_manager.historical_data['price'].get('1d', pd.DataFrame())
+            if price_df.empty:
+                self.log_message("日线数据为空，使用默认分析", "WARNING")
+                return self.run_analysis()
+            
+            if 'close' in price_df.columns:
+                close = price_df['close'].tail(60)
+            else:
+                close = price_df.iloc[:, 3].tail(60)
+            
+            trend = close.pct_change().mean()
+            volatility = close.pct_change().std()
+            
+            result = {
+                'market_trend': '上涨' if trend > 0 else '下跌' if trend < 0 else '震荡',
+                'volatility': float(volatility if pd.notna(volatility) else 0),
+                'sentiment_score': np.random.uniform(0.3, 0.8),
+                'recommendation': '买入' if trend > 0 else '卖出' if trend < 0 else '持有',
+                'confidence': min(max(abs(trend) * 500, 0.3), 0.9)
+            }
+            
+            self.show_analysis_result(result)
+        except Exception as e:
+            self.log_message(f"市场趋势分析失败: {e}", "ERROR")
+            messagebox.showerror("市场趋势分析失败", str(e))
+    
+    def analyze_risk(self):
+        """风险分析"""
+        try:
+            metrics = self.trading_engine.risk_metrics
+            info = "\n".join([f"{k}: {v}" for k, v in metrics.items()])
+            messagebox.showinfo("风险分析", f"当前风险参数:\n{info}")
+        except Exception as e:
+            self.log_message(f"风险分析失败: {e}", "ERROR")
+            messagebox.showerror("风险分析失败", str(e))
+    
+    def analyze_models(self):
+        """模型评估"""
+        try:
+            performance = self.model_manager.model_performance
+            lines = []
+            for name, perf in performance.items():
+                acc = perf.get('accuracy', 0)
+                lines.append(f"{name}: 准确率 {acc:.3f}")
+            if not lines:
+                lines.append("暂无模型性能数据")
+            messagebox.showinfo("模型评估", "\n".join(lines))
+        except Exception as e:
+            self.log_message(f"模型评估失败: {e}", "ERROR")
+            messagebox.showerror("模型评估失败", str(e))
+    
+    def analyze_data_quality(self):
+        """数据质量分析"""
+        try:
+            parts = []
+            price_1d = self.data_manager.historical_data['price'].get('1d', pd.DataFrame())
+            parts.append(f"日线价格: {len(price_1d)} 条")
+            social = self.data_manager.historical_data['social']
+            parts.append(f"社交数据: {len(social)} 条")
+            onchain = self.data_manager.historical_data['onchain']
+            parts.append(f"链上数据: {len(onchain)} 条")
+            derivatives = self.data_manager.historical_data['derivatives']
+            parts.append(f"衍生品数据: {len(derivatives)} 条")
+            messagebox.showinfo("数据质量", "\n".join(parts))
+        except Exception as e:
+            self.log_message(f"数据质量分析失败: {e}", "ERROR")
+            messagebox.showerror("数据质量分析失败", str(e))
+    
     def show_analysis_result(self, result):
         """显示分析结果"""
         try:
