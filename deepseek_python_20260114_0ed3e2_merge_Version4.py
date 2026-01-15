@@ -1558,7 +1558,11 @@ class AdvancedFeatureEngineer:
         """创建时间序列特征"""
         df = df.copy()
         if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index, errors='coerce')
+            try:
+                df.index = pd.to_datetime(df.index, errors='coerce')
+            except Exception as conversion_error:
+                logger.error(f"时间索引转换异常: {conversion_error}")
+                return pd.DataFrame()
         original_len = len(df)
         df = df[df.index.notna()]
         dropped = original_len - len(df)
