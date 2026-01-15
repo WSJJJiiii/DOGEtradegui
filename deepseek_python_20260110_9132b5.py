@@ -9,6 +9,10 @@ import json
 import time
 import threading
 import queue
+import argparse
+import hmac
+import hashlib
+import urllib.parse
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import logging
@@ -2029,6 +2033,229 @@ class StableMainController:
         
         logger.info("系统已停止")
 
+# ==================== 币安简化接口 ====================
+
+class BinanceClient:
+    """币安现货API简化封装"""
+    
+    def __init__(self, api_key="", api_secret="", proxy=""):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = "https://api.binance.com"
+        self.testnet_url = "https://testnet.binance.vision"
+        self.proxies = {'https': proxy, 'http': proxy} if proxy else None
+        self.timeout = 15
+        self.recv_window = 5000
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0',
+            'X-MBX-APIKEY': self.api_key
+        })
+    
+    def _get_timestamp(self):
+        return int(time.time() * 1000)
+    
+    def _sign(self, params):
+        query_string = urllib.parse.urlencode(params)
+        return hmac.new(
+            self.api_secret.encode('utf-8'),
+            query_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+    
+    def _request(self, method, endpoint, params=None, signed=False, testnet=False):
+        url = (self.testnet_url if testnet else self.base_url) + endpoint
+        if signed:
+            params = params or {}
+            params['timestamp'] = self._get_timestamp()
+            params['recvWindow'] = self.recv_window
+            params['signature'] = self._sign(params)
+        try:
+            if method == 'GET':
+                resp = self.session.get(url, params=params, proxies=self.proxies, timeout=self.timeout)
+            elif method == 'POST':
+                resp = self.session.post(url, data=params, proxies=self.proxies, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error(f"币安API请求失败: {e}")
+            return None
+    
+    def get_price(self, symbol="DOGEUSDT"):
+        try:
+            resp = requests.get(f"{self.base_url}/api/v3/ticker/price", params={"symbol": symbol}, timeout=5, proxies=self.proxies)
+            data = resp.json()
+            if isinstance(data, dict) and 'price' in data:
+                return float(data['price'])
+        except Exception as e:
+            logger.error(f"获取价格失败: {e}")
+        return None
+    
+    def get_klines(self, symbol="DOGEUSDT", interval="5m", limit=200):
+        try:
+            data = self._request('GET', '/api/v3/klines', {
+                'symbol': symbol,
+                'interval': interval,
+                'limit': limit
+            })
+            if not data:
+                return pd.DataFrame()
+            df = pd.DataFrame(data, columns=[
+                'open_time', 'open', 'high', 'low', 'close', 'volume',
+                'close_time', 'quote_volume', 'trades', 'taker_buy_base',
+                'taker_buy_quote', 'ignore'
+            ])
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'quote_volume']
+            df[numeric_cols] = df[numeric_cols].astype(float)
+            df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+            return df
+        except Exception as e:
+            logger.error(f"获取K线失败: {e}")
+            return pd.DataFrame()
+    
+    def send_order(self, symbol, side, quantity, order_type="MARKET"):
+        try:
+            params = {
+                'symbol': symbol,
+                'side': side,
+                'type': order_type,
+                'quantity': quantity
+            }
+            result = self._request('POST', '/api/v3/order', params, signed=True)
+            return {'success': bool(result and result.get('orderId')), 'result': result}
+        except Exception as e:
+            logger.error(f"下单失败: {e}")
+            return {'success': False, 'error': str(e)}
+
+
+# ==================== 简化量化交易器 ====================
+
+class SimpleBinanceAutoTrader:
+    """基于deepseek简化逻辑 + 币安接口的DOGE自动交易"""
+    
+    def __init__(
+        self,
+        api_key="",
+        api_secret="",
+        proxy="",
+        symbol="DOGEUSDT",
+        interval="5m",
+        lookback=120,
+        initial_balance=1000.0,
+        live=False,
+        ma_short=12,
+        ma_long=36,
+        rsi_period=14,
+        position_scale=0.1,
+        min_qty=1.0,
+        zero_guard=1e-9
+    ):
+        self.client = BinanceClient(api_key, api_secret, proxy)
+        self.symbol = symbol
+        self.interval = interval
+        self.lookback = lookback
+        self.balance = initial_balance
+        self.live = live
+        self.ma_short = ma_short
+        self.ma_long = ma_long
+        self.rsi_period = rsi_period
+        self.position_scale = position_scale
+        self.min_qty = min_qty
+        self.zero_guard = zero_guard
+        self.position_qty = 0.0
+        self.entry_price = 0.0
+    
+    def _fallback_prices(self):
+        base_price = self.client.get_price(self.symbol) or 0.08
+        timestamps = pd.date_range(end=datetime.now(), periods=self.lookback, freq='5T')
+        rng = np.random.default_rng()
+        returns = rng.normal(0, 0.002, len(timestamps))
+        prices = base_price * np.exp(np.cumsum(returns))
+        vols = rng.lognormal(mean=10, sigma=1, size=len(timestamps))
+        return pd.DataFrame({'close_time': timestamps, 'close': prices, 'volume': vols}).set_index('close_time')
+    
+    def _fetch_candles(self):
+        df = self.client.get_klines(self.symbol, self.interval, self.lookback)
+        if df is None or df.empty:
+            logger.warning("实时K线不可用，使用模拟价格序列")
+            return self._fallback_prices()
+        df = df[['close_time', 'close', 'volume']].copy()
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
+        return df.set_index('close_time')
+    
+    def _indicators(self, df):
+        f = df.copy()
+        f['ma_s'] = f['close'].rolling(self.ma_short).mean()
+        f['ma_l'] = f['close'].rolling(self.ma_long).mean()
+        delta = f['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(self.rsi_period).mean()
+        avg_loss = loss.rolling(self.rsi_period).mean().clip(lower=self.zero_guard)
+        rs = avg_gain / avg_loss
+        f['rsi'] = 100 - (100 / (1 + rs))
+        return f.dropna()
+    
+    def _signal(self, frame):
+        latest = frame.iloc[-1]
+        price = float(latest['close'])
+        safe_price = price if price > 0 else self.zero_guard
+        trend_gap = latest['ma_s'] - latest['ma_l']
+        rsi = latest['rsi']
+        action = "HOLD"
+        if trend_gap > 0 and rsi < 70:
+            action = "BUY"
+        elif trend_gap < 0 and rsi > 30 and self.position_qty > 0:
+            action = "SELL"
+        confidence = max(0.05, min(0.95,
+            abs(trend_gap) / safe_price * 0.6 + abs(rsi - 50) / 50 * 0.4
+        ))
+        target_value = self.balance * self.position_scale
+        qty = max(target_value / safe_price, self.min_qty) if action == "BUY" else self.position_qty
+        return {'action': action, 'price': price, 'qty': qty, 'confidence': confidence}
+    
+    def _execute(self, signal):
+        if signal['action'] == "BUY" and self.position_qty == 0 and signal['qty'] > 0:
+            result = {'success': True}
+            if self.live:
+                result = self.client.send_order(self.symbol, "BUY", signal['qty'], "MARKET")
+            if result.get('success'):
+                self.position_qty = signal['qty']
+                self.entry_price = signal['price']
+                self.balance = max(self.balance - self.position_qty * signal['price'], 0)
+            return result
+        if signal['action'] == "SELL" and self.position_qty > 0:
+            result = {'success': True}
+            if self.live:
+                result = self.client.send_order(self.symbol, "SELL", self.position_qty, "MARKET")
+            if result.get('success'):
+                pnl = (signal['price'] - self.entry_price) * self.position_qty
+                self.balance += self.position_qty * signal['price']
+                self.position_qty = 0.0
+                self.entry_price = 0.0
+                result['pnl'] = pnl
+            return result
+        return {'success': False, 'error': 'no action'}
+    
+    def run_cycle(self):
+        candles = self._fetch_candles()
+        frame = self._indicators(candles)
+        if frame.empty:
+            return {'error': 'insufficient data'}
+        signal = self._signal(frame)
+        trade = self._execute(signal)
+        return {
+            'signal': signal,
+            'trade': trade,
+            'account': {
+                'balance': self.balance,
+                'position_qty': self.position_qty,
+                'entry_price': self.entry_price,
+                'last_price': signal['price']
+            }
+        }
+
 # ==================== 应用程序入口 ====================
 
 def stable_main():
@@ -2093,4 +2320,28 @@ def stable_main():
         )
 
 if __name__ == "__main__":
-    stable_main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--simple", action="store_true", help="运行无GUI的简化自动交易")
+    parser.add_argument("--api-key", default="", help="币安API Key")
+    parser.add_argument("--api-secret", default="", help="币安API Secret")
+    parser.add_argument("--proxy", default="", help="HTTP/HTTPS 代理")
+    parser.add_argument("--interval", default="5m")
+    parser.add_argument("--lookback", type=int, default=120)
+    parser.add_argument("--balance", type=float, default=1000.0)
+    parser.add_argument("--live", action="store_true")
+    args, _ = parser.parse_known_args()
+    
+    if args.simple:
+        trader = SimpleBinanceAutoTrader(
+            api_key=args.api_key,
+            api_secret=args.api_secret,
+            proxy=args.proxy,
+            interval=args.interval,
+            lookback=args.lookback,
+            initial_balance=args.balance,
+            live=args.live
+        )
+        result = trader.run_cycle()
+        print(json.dumps(result, ensure_ascii=False, default=str))
+    else:
+        stable_main()
