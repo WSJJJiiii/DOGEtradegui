@@ -3320,6 +3320,12 @@ class CompleteTradingEngine:
 class CompleteTradingGUI:
     """完整的交易系统GUI，整合所有功能"""
     
+    GUI_UPDATE_INTERVAL = 2000      # GUI更新间隔（毫秒）
+    TRADING_INTERVAL = 30000        # 交易检查间隔（毫秒）
+    GUI_FAILURE_THRESHOLD = 3
+    GUI_BACKOFF_MULTIPLIER = 3
+    GUI_BACKOFF_MIN_DELAY = 10000
+    
     def __init__(self, root):
         self.root = root
         
@@ -3336,12 +3342,12 @@ class CompleteTradingGUI:
         # 系统状态
         self.is_running = False
         self.is_initialized = False
-        self.update_interval = 2000  # GUI更新间隔（毫秒）
-        self.trading_interval = 30000  # 交易检查间隔（毫秒）
+        self.update_interval = self.GUI_UPDATE_INTERVAL
+        self.trading_interval = self.TRADING_INTERVAL
         self.gui_update_failures = 0
-        self.gui_failure_threshold = 3
-        self.gui_backoff_multiplier = 3
-        self.gui_backoff_delay = 10000
+        self.gui_failure_threshold = self.GUI_FAILURE_THRESHOLD
+        self.gui_backoff_multiplier = self.GUI_BACKOFF_MULTIPLIER
+        self.gui_backoff_min_delay = self.GUI_BACKOFF_MIN_DELAY
         self.gui_update_loop_started = False
         
         # GUI组件
@@ -5013,13 +5019,17 @@ class CompleteTradingGUI:
         delay = self.update_interval
         try:
             self.update_gui()
-            if self.gui_update_failures:
-                self.gui_update_failures = 0
         except Exception as e:
             self.gui_update_failures += 1
             self.log_message(f"GUI调度失败: {e}", "ERROR")
             if self.gui_update_failures >= self.gui_failure_threshold:
-                delay = max(self.update_interval * self.gui_backoff_multiplier, self.gui_backoff_delay)
+                delay = max(
+                    self.update_interval * self.gui_backoff_multiplier,
+                    self.gui_backoff_min_delay
+                )
+        else:
+            if self.gui_update_failures:
+                self.gui_update_failures = 0
         finally:
             # 使用after定时触发下一次更新
             self.root.after(delay, self._gui_update_tick)
