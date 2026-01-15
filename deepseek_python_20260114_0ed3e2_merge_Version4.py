@@ -3325,6 +3325,8 @@ class CompleteTradingGUI:
     GUI_FAILURE_THRESHOLD = 3
     GUI_BACKOFF_MULTIPLIER = 3
     GUI_BACKOFF_MIN_DELAY = 10000
+    GUI_BACKOFF_MAX_DELAY = 20000
+    GUI_BACKOFF_RESET_MS = 60000
     
     def __init__(self, root):
         self.root = root
@@ -3348,6 +3350,9 @@ class CompleteTradingGUI:
         self.gui_failure_threshold = self.GUI_FAILURE_THRESHOLD
         self.gui_backoff_multiplier = self.GUI_BACKOFF_MULTIPLIER
         self.gui_backoff_min_delay = self.GUI_BACKOFF_MIN_DELAY
+        self.gui_backoff_max_delay = self.GUI_BACKOFF_MAX_DELAY
+        self.gui_backoff_reset_ms = self.GUI_BACKOFF_RESET_MS
+        self.gui_last_failure_ts = None
         self.gui_update_loop_started = False
         
         # GUI组件
@@ -5017,16 +5022,28 @@ class CompleteTradingGUI:
     def _gui_update_tick(self):
         """单次GUI更新并计划下一次"""
         delay = self.update_interval
+        now = datetime.now()
+        
+        # 如果一段时间没有失败，重置计数
+        if (
+            self.gui_last_failure_ts 
+            and (now - self.gui_last_failure_ts).total_seconds() * 1000 >= self.gui_backoff_reset_ms
+        ):
+            self.gui_update_failures = 0
+            self.gui_last_failure_ts = None
+        
         try:
             self.update_gui()
         except Exception as e:
             self.gui_update_failures += 1
+            self.gui_last_failure_ts = now
             self.log_message(f"GUI调度失败: {e}", "ERROR")
             if self.gui_update_failures >= self.gui_failure_threshold:
-                delay = max(
+                computed_delay = max(
                     self.update_interval * self.gui_backoff_multiplier,
                     self.gui_backoff_min_delay
                 )
+                delay = min(computed_delay, self.gui_backoff_max_delay)
         else:
             if self.gui_update_failures:
                 self.gui_update_failures = 0
