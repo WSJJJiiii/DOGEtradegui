@@ -6410,23 +6410,23 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
     
     def analyze_market_trend(self):
         """市场趋势分析入口"""
-        return self.run_analysis()
+        return self.run_analysis("市场趋势分析")
     
     def analyze_risk(self):
         """风险分析入口"""
-        return self.run_analysis()
+        return self.run_analysis("风险分析")
     
     def analyze_models(self):
         """模型评估入口"""
-        return self.run_analysis()
+        return self.run_analysis("模型评估")
     
     def analyze_data_quality(self):
         """数据质量分析入口"""
-        return self.run_analysis()
+        return self.run_analysis("数据质量分析")
     
-    def run_analysis(self):
+    def run_analysis(self, analysis_type="综合分析"):
         """运行分析"""
-        self.log_message("开始运行分析...", "INFO")
+        self.log_message(f"开始{analysis_type}...", "INFO")
         
         # 在后台运行分析
         def analysis_thread():
@@ -6437,6 +6437,7 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
                 
                 # 分析结果
                 analysis_result = {
+                    'analysis_type': analysis_type,
                     'market_trend': np.random.choice(['上涨', '下跌', '震荡']),
                     'volatility': np.random.uniform(0.01, 0.05),
                     'sentiment_score': np.random.uniform(0.3, 0.8),
@@ -6467,7 +6468,8 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
             info = f"""
 市场分析报告
 ==============
-分析���间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+分析类型: {result.get('analysis_type', '综合分析')}
             
 市场趋势: {result['market_trend']}
 波动率: {result['volatility']:.2%}
