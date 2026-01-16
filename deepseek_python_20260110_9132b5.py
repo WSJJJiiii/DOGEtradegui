@@ -2275,7 +2275,7 @@ class SimpleBinanceAutoTrader:
         interval="5m",
         lookback=120,
         initial_balance=1000.0,
-        live=False,
+        live=True,
         ma_short=12,
         ma_long=36,
         rsi_period=14,
@@ -2370,12 +2370,6 @@ class SimpleBinanceAutoTrader:
         return {'success': False, 'error': 'no action'}
     
     def run_cycle(self):
-        candles = self._fetch_candles()
-        frame = self._indicators(candles)
-        if frame.empty:
-            return {'error': 'insufficient data'}
-        signal = self._signal(frame)
-        trade = self._execute(signal)
         balances = {}
         if self.live:
             balances = self.client.get_balance()
@@ -2383,6 +2377,12 @@ class SimpleBinanceAutoTrader:
                 self.balance = balances['USDT']['free']
             if 'DOGE' in balances:
                 self.position_qty = balances['DOGE']['total']
+        candles = self._fetch_candles()
+        frame = self._indicators(candles)
+        if frame.empty:
+            return {'error': 'insufficient data'}
+        signal = self._signal(frame)
+        trade = self._execute(signal)
         return {
             'signal': signal,
             'trade': trade,
