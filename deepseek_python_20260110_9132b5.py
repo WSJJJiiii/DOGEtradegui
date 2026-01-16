@@ -1567,7 +1567,8 @@ class StableTradingGUI:
                     interval="5m",
                     lookback=120,
                     initial_balance=self.trading_engine.balance if hasattr(self.trading_engine, 'balance') else 1000.0,
-                    live=False  # GUI默认先走模拟交易，避免误下单
+                    live=True,  # 仅使用币安实盘数据
+                    min_notional=5.0
                 )
             
             self.status_label.configure(
@@ -1670,8 +1671,12 @@ class StableTradingGUI:
             
             # 更新价格数据
             if self.use_simple_trader.get() and self.simple_trader:
-                latest_price = self.simple_trader.client.get_price(self.simple_trader.symbol) or 0.08
+                latest_price = self.simple_trader.client.get_price(self.simple_trader.symbol) or 0.0
                 self.price_labels['price'].configure(text=f"${latest_price:.6f}", foreground=self.colors['primary'])
+                self.price_labels['high'].configure(text=f"${latest_price:.6f}")
+                self.price_labels['low'].configure(text=f"${latest_price:.6f}")
+                self.price_labels['change_24h'].configure(text="--", foreground=self.colors['warning'])
+                self.price_labels['volume'].configure(text="--")
             elif self.data_manager:
                 latest_data = self.data_manager.get_latest_data()
                 
@@ -1704,18 +1709,19 @@ class StableTradingGUI:
                         text=f"${current_price * 0.998:.6f}"
                     )
             
-            # 更新社交媒体情绪
-            twitter_sentiment = np.random.uniform(0.3, 0.8)
-            reddit_sentiment = np.random.uniform(0.4, 0.9)
-            news_sentiment = np.random.uniform(0.2, 0.7)
-            composite_sentiment = (twitter_sentiment * 0.4 + 
-                                 reddit_sentiment * 0.3 + 
-                                 news_sentiment * 0.3)
-            
-            self.sentiment_labels['twitter'].configure(text=f"{twitter_sentiment:.2f}")
-            self.sentiment_labels['reddit'].configure(text=f"{reddit_sentiment:.2f}")
-            self.sentiment_labels['news'].configure(text=f"{news_sentiment:.2f}")
-            self.sentiment_labels['composite'].configure(text=f"{composite_sentiment:.2f}")
+            # 使用简化交易时，不展示随机情绪
+            if not (self.use_simple_trader.get() and self.simple_trader):
+                twitter_sentiment = np.random.uniform(0.3, 0.8)
+                reddit_sentiment = np.random.uniform(0.4, 0.9)
+                news_sentiment = np.random.uniform(0.2, 0.7)
+                composite_sentiment = (twitter_sentiment * 0.4 + 
+                                     reddit_sentiment * 0.3 + 
+                                     news_sentiment * 0.3)
+                
+                self.sentiment_labels['twitter'].configure(text=f"{twitter_sentiment:.2f}")
+                self.sentiment_labels['reddit'].configure(text=f"{reddit_sentiment:.2f}")
+                self.sentiment_labels['news'].configure(text=f"{news_sentiment:.2f}")
+                self.sentiment_labels['composite'].configure(text=f"{composite_sentiment:.2f}")
             
             # 更新仓位信息
             if self.trading_engine:
@@ -1757,6 +1763,19 @@ class StableTradingGUI:
                             if isinstance(value, (int, float)):
                                 color = self.colors['success'] if value >= 0 else self.colors['danger']
                                 label.configure(foreground=color)
+
+            # 使用简化交易时同步仓位信息
+            if self.use_simple_trader.get() and self.simple_trader:
+                bal = self.simple_trader.balance
+                qty = self.simple_trader.position_qty
+                entry = self.simple_trader.entry_price
+                last_price = self.simple_trader.client.get_price(self.simple_trader.symbol) or entry
+                position_value = qty * last_price
+                self.position_labels.get('balance', ttk.Label()).configure(text=f"${bal:.2f}")
+                self.position_labels.get('quantity', ttk.Label()).configure(text=f"{qty:.0f} DOGE")
+                self.position_labels.get('entry_price', ttk.Label()).configure(text=f"${entry:.6f}")
+                self.position_labels.get('current_price', ttk.Label()).configure(text=f"${last_price:.6f}")
+                self.position_labels.get('position_value', ttk.Label()).configure(text=f"${position_value:.2f}")
             
         except Exception as e:
             self.log_message(f"GUI更新失败: {e}", "error")
@@ -1793,6 +1812,9 @@ class StableTradingGUI:
                     self.log_message(f"[简化] 交易完成 PnL={pnl:.4f}", "success" if pnl >= 0 else "danger")
                 else:
                     self.log_message(f"[简化] 交易完成", "success")
+            else:
+                err = trade.get('error', '交易未执行')
+                self.log_message(f"[简化] 交易未执行: {err}", "warning")
             if account:
                 self.position_labels.get('balance', ttk.Label()).configure(text=f"${account.get('balance',0):.2f}")
                 self.position_labels.get('quantity', ttk.Label()).configure(text=f"{account.get('position_qty',0):.0f} DOGE")
@@ -1804,43 +1826,15 @@ class StableTradingGUI:
     def generate_trading_signal(self):
         """生成交易信号"""
         try:
-            # 获取当前数据
-            if self.data_manager:
-                latest_data = self.data_manager.get_latest_data()
-                current_price = latest_data['price'].get('close', 0.08) if 'price' in latest_data else 0.08
-            else:
-                current_price = 0.08
-            
-            # 模拟信号生成逻辑
-            signals = ['BUY', 'SELL', 'HOLD']
-            weights = [0.3, 0.2, 0.5]
-            action = np.random.choice(signals, p=weights)
-            
-            if action == 'BUY':
-                strength = 'STRONG_BUY' if np.random.random() > 0.7 else 'BUY'
-            elif action == 'SELL':
-                strength = 'STRONG_SELL' if np.random.random() > 0.7 else 'SELL'
-            else:
-                strength = 'NEUTRAL'
-            
-            confidence = np.random.uniform(0.4, 0.9)
-            
-            signal = {
+            # 默认持有，交由简化交易器处理实盘信号
+            return {
                 'timestamp': datetime.now(),
-                'action': action,
-                'strength': strength,
-                'confidence': confidence,
-                'position_size': np.random.randint(100, 1000) if action != 'HOLD' else 0,
-                'reasoning': [
-                    '技术指标显示买入信号' if action == 'BUY' else
-                    '技术指标显示卖出信号' if action == 'SELL' else
-                    '市场无明显方向'
-                ]
+                'action': 'HOLD',
+                'strength': 'NEUTRAL',
+                'confidence': 0.5,
+                'position_size': 0,
+                'reasoning': ['简化实盘模式由Binance数据驱动']
             }
-            
-            self.signals_history.append(signal)
-            return signal
-            
         except Exception as e:
             self.log_message(f"生成交易信号失败: {e}", "error")
             # 返回默认信号
@@ -2215,6 +2209,23 @@ class BinanceClient:
             logger.error(f"测试API连接失败: {e}")
             return False
 
+    def get_balance(self):
+        """获取账户余额"""
+        try:
+            result = self._request('GET', '/api/v3/account', signed=True)
+            balances = {}
+            if result and 'balances' in result:
+                for b in result['balances']:
+                    asset = b['asset']
+                    free = float(b['free'])
+                    locked = float(b['locked'])
+                    if free > 0 or locked > 0:
+                        balances[asset] = {'free': free, 'locked': locked, 'total': free + locked}
+            return balances
+        except Exception as e:
+            logger.error(f"获取余额失败: {e}")
+            return {}
+
 
 # ==================== 简化量化交易器 ====================
 
@@ -2236,7 +2247,8 @@ class SimpleBinanceAutoTrader:
         rsi_period=14,
         position_scale=0.1,
         min_qty=1.0,
-        zero_guard=1e-9
+        zero_guard=1e-9,
+        min_notional=5.0
     ):
         self.client = BinanceClient(api_key, api_secret, proxy)
         self.symbol = symbol
@@ -2250,23 +2262,14 @@ class SimpleBinanceAutoTrader:
         self.position_scale = position_scale
         self.min_qty = min_qty
         self.zero_guard = zero_guard
+        self.min_notional = min_notional
         self.position_qty = 0.0
         self.entry_price = 0.0
-    
-    def _fallback_prices(self):
-        base_price = self.client.get_price(self.symbol) or 0.08
-        timestamps = pd.date_range(end=datetime.now(), periods=self.lookback, freq='5T')
-        rng = np.random.default_rng()
-        returns = rng.normal(0, 0.002, len(timestamps))
-        prices = base_price * np.exp(np.cumsum(returns))
-        vols = rng.lognormal(mean=10, sigma=1, size=len(timestamps))
-        return pd.DataFrame({'close_time': timestamps, 'close': prices, 'volume': vols}).set_index('close_time')
     
     def _fetch_candles(self):
         df = self.client.get_klines(self.symbol, self.interval, self.lookback)
         if df is None or df.empty:
-            logger.warning("实时K线不可用，使用模拟价格序列")
-            return self._fallback_prices()
+            raise RuntimeError("无法从币安获取K线数据")
         df = df[['close_time', 'close', 'volume']].copy()
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
@@ -2307,6 +2310,8 @@ class SimpleBinanceAutoTrader:
     
     def _execute(self, signal):
         if signal['action'] == "BUY" and self.position_qty == 0 and signal['qty'] > 0:
+            if signal['qty'] * signal['price'] < self.min_notional:
+                return {'success': False, 'error': '最小名义金额不足'}
             result = {'success': True}
             if self.live:
                 result = self.client.send_order(self.symbol, "BUY", signal['qty'], "MARKET")
@@ -2335,6 +2340,13 @@ class SimpleBinanceAutoTrader:
             return {'error': 'insufficient data'}
         signal = self._signal(frame)
         trade = self._execute(signal)
+        balances = {}
+        if self.live:
+            balances = self.client.get_balance()
+            if 'USDT' in balances:
+                self.balance = balances['USDT']['free']
+            if 'DOGE' in balances:
+                self.position_qty = balances['DOGE']['total']
         return {
             'signal': signal,
             'trade': trade,
