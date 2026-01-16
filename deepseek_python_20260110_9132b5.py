@@ -13,6 +13,7 @@ import argparse
 import hmac
 import hashlib
 import urllib.parse
+from functools import partial
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 import logging
@@ -1277,10 +1278,12 @@ class StableTradingGUI:
         self.data_manager = data_manager
         self.model_manager = model_manager
         self.trading_engine = trading_engine
+        self.simple_trader = None
         
         # 系统状态
         self.is_running = False
         self.is_training = False
+        self.use_simple_trader = tk.BooleanVar(value=False)
         
         # 控制变量
         self.update_id = None
@@ -1402,6 +1405,29 @@ class StableTradingGUI:
             width=15
         )
         self.restart_button.pack(side=tk.LEFT, padx=5)
+
+        # API配置
+        api_frame = ttk.LabelFrame(control_frame, text="API配置", padding=8)
+        api_frame.pack(fill=tk.X, pady=5)
+        ttk.Label(api_frame, text="API Key").grid(row=0, column=0, sticky="w")
+        ttk.Label(api_frame, text="API Secret").grid(row=1, column=0, sticky="w")
+        ttk.Label(api_frame, text="代理").grid(row=2, column=0, sticky="w")
+        self.api_key_entry = ttk.Entry(api_frame, width=28, show="*")
+        self.api_secret_entry = ttk.Entry(api_frame, width=28, show="*")
+        self.proxy_entry = ttk.Entry(api_frame, width=28)
+        self.api_key_entry.grid(row=0, column=1, padx=4, pady=2)
+        self.api_secret_entry.grid(row=1, column=1, padx=4, pady=2)
+        self.proxy_entry.grid(row=2, column=1, padx=4, pady=2)
+        self.test_api_button = ttk.Button(api_frame, text="测试连接", command=self.test_api_connection, width=12)
+        self.test_api_button.grid(row=0, column=2, padx=4, pady=2, rowspan=2, sticky="ns")
+        self.api_status_label = ttk.Label(api_frame, text="未测试", foreground=self.colors['warning'])
+        self.api_status_label.grid(row=2, column=2, padx=4, pady=2)
+
+        # 简化交易模式选择
+        simple_frame = ttk.Frame(control_frame)
+        simple_frame.pack(fill=tk.X, pady=4)
+        simple_check = ttk.Checkbutton(simple_frame, text="启用简化自动交易 (MA+RSI)", variable=self.use_simple_trader)
+        simple_check.pack(side=tk.LEFT)
         
         # 实时数据面板
         data_frame = ttk.LabelFrame(left_panel, text="实时数据", padding=10)
@@ -1533,6 +1559,16 @@ class StableTradingGUI:
         if not self.is_running:
             self.is_running = True
             self.error_count = 0
+            if self.use_simple_trader.get():
+                self.simple_trader = SimpleBinanceAutoTrader(
+                    api_key=self.api_key_entry.get().strip(),
+                    api_secret=self.api_secret_entry.get().strip(),
+                    proxy=self.proxy_entry.get().strip(),
+                    interval="5m",
+                    lookback=120,
+                    initial_balance=self.trading_engine.balance if hasattr(self.trading_engine, 'balance') else 1000.0,
+                    live=False  # GUI默认先走模拟交易，避免误下单
+                )
             
             self.status_label.configure(
                 text="🟢 交易运行中",
@@ -1554,6 +1590,7 @@ class StableTradingGUI:
         """停止交易系统"""
         if self.is_running:
             self.is_running = False
+            self.simple_trader = None
             
             # 停止定时器
             if self.update_id:
@@ -1607,7 +1644,10 @@ class StableTradingGUI:
         """计划交易循环"""
         if self.is_running:
             try:
-                self.execute_trading_cycle()
+                if self.use_simple_trader.get() and self.simple_trader:
+                    self.execute_simple_trading_cycle()
+                else:
+                    self.execute_trading_cycle()
                 # 使用after而不是递归
                 self.trading_loop_id = self.root.after(self.trading_interval, self.schedule_trading_loop)
             except Exception as e:
@@ -1629,7 +1669,10 @@ class StableTradingGUI:
             self.status_bar.configure(text=f"最后更新: {current_time}")
             
             # 更新价格数据
-            if self.data_manager:
+            if self.use_simple_trader.get() and self.simple_trader:
+                latest_price = self.simple_trader.client.get_price(self.simple_trader.symbol) or 0.08
+                self.price_labels['price'].configure(text=f"${latest_price:.6f}", foreground=self.colors['primary'])
+            elif self.data_manager:
                 latest_data = self.data_manager.get_latest_data()
                 
                 if 'price' in latest_data and latest_data['price']:
@@ -1735,6 +1778,28 @@ class StableTradingGUI:
             
         except Exception as e:
             self.log_message(f"交易周期失败: {e}", "error")
+
+    def execute_simple_trading_cycle(self):
+        """执行简化交易周期 (使用Binance接口)"""
+        try:
+            result = self.simple_trader.run_cycle()
+            signal = result.get('signal', {})
+            trade = result.get('trade', {})
+            account = result.get('account', {})
+            self.log_message(f"[简化] 信号: {signal.get('action')} 置信度:{signal.get('confidence',0):.2f}", "info")
+            if trade.get('success'):
+                pnl = trade.get('pnl', 0)
+                if pnl != 0:
+                    self.log_message(f"[简化] 交易完成 PnL={pnl:.4f}", "success" if pnl >= 0 else "danger")
+                else:
+                    self.log_message(f"[简化] 交易完成", "success")
+            if account:
+                self.position_labels.get('balance', ttk.Label()).configure(text=f"${account.get('balance',0):.2f}")
+                self.position_labels.get('quantity', ttk.Label()).configure(text=f"{account.get('position_qty',0):.0f} DOGE")
+                self.position_labels.get('entry_price', ttk.Label()).configure(text=f"${account.get('entry_price',0):.6f}")
+                self.position_labels.get('current_price', ttk.Label()).configure(text=f"${account.get('last_price',0):.6f}")
+        except Exception as e:
+            self.log_message(f"简化交易周期失败: {e}", "error")
     
     def generate_trading_signal(self):
         """生成交易信号"""
@@ -1787,6 +1852,20 @@ class StableTradingGUI:
                 'position_size': 0,
                 'reasoning': ['系统错误，默认持有']
             }
+
+    def test_api_connection(self):
+        """测试API连接并更新状态"""
+        api_key = self.api_key_entry.get().strip()
+        api_secret = self.api_secret_entry.get().strip()
+        proxy = self.proxy_entry.get().strip()
+        client = BinanceClient(api_key, api_secret, proxy)
+        ok = client.test_connection()
+        if ok:
+            self.api_status_label.configure(text="连接正常", foreground=self.colors['success'])
+            self.log_message("API连接成功", "success")
+        else:
+            self.api_status_label.configure(text="连接失败", foreground=self.colors['danger'])
+            self.log_message("API连接失败，请检查配置", "danger")
     
     def display_trading_signal(self, signal: Dict):
         """显示交易信号"""
@@ -2127,6 +2206,15 @@ class BinanceClient:
             logger.error(f"下单失败: {e}")
             return {'success': False, 'error': str(e)}
 
+    def test_connection(self):
+        """测试API连通性"""
+        try:
+            result = self._request('GET', '/api/v3/ping')
+            return result == {}
+        except Exception as e:
+            logger.error(f"测试API连接失败: {e}")
+            return False
+
 
 # ==================== 简化量化交易器 ====================
 
@@ -2212,7 +2300,9 @@ class SimpleBinanceAutoTrader:
             abs(trend_gap) / safe_price * 0.6 + abs(rsi - 50) / 50 * 0.4
         ))
         target_value = self.balance * self.position_scale
+        max_affordable = self.balance / safe_price if safe_price > 0 else 0
         qty = max(target_value / safe_price, self.min_qty) if action == "BUY" else self.position_qty
+        qty = min(qty, max_affordable)
         return {'action': action, 'price': price, 'qty': qty, 'confidence': confidence}
     
     def _execute(self, signal):
