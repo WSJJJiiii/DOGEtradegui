@@ -3320,6 +3320,14 @@ class CompleteTradingEngine:
 class CompleteTradingGUI:
     """完整的交易系统GUI，整合所有功能"""
     
+    GUI_UPDATE_INTERVAL = 2000      # GUI更新间隔（毫秒）
+    TRADING_INTERVAL = 30000        # 交易检查间隔（毫秒）
+    GUI_FAILURE_THRESHOLD = 3
+    GUI_BACKOFF_MULTIPLIER = 3
+    GUI_BACKOFF_MIN_DELAY = 10000
+    GUI_BACKOFF_MAX_DELAY = 20000
+    GUI_BACKOFF_RESET_MS = 60000
+    
     def __init__(self, root):
         self.root = root
         
@@ -3336,8 +3344,16 @@ class CompleteTradingGUI:
         # 系统状态
         self.is_running = False
         self.is_initialized = False
-        self.update_interval = 2000  # GUI更新间隔（毫秒）
-        self.trading_interval = 30000  # 交易检查间隔（毫秒）
+        self.update_interval = self.GUI_UPDATE_INTERVAL
+        self.trading_interval = self.TRADING_INTERVAL
+        self.gui_update_failures = 0
+        self.gui_failure_threshold = self.GUI_FAILURE_THRESHOLD
+        self.gui_backoff_multiplier = self.GUI_BACKOFF_MULTIPLIER
+        self.gui_backoff_min_delay = self.GUI_BACKOFF_MIN_DELAY
+        self.gui_backoff_max_delay = self.GUI_BACKOFF_MAX_DELAY
+        self.gui_backoff_reset_ms = self.GUI_BACKOFF_RESET_MS
+        self.gui_last_failure_ts = None
+        self.gui_update_loop_started = False
         
         # GUI组件
         self.frames = {}
@@ -4995,6 +5011,48 @@ class CompleteTradingGUI:
         
         self.log_message("交易系统已停止", "INFO")
     
+    def schedule_gui_update(self):
+        """计划GUI更新循环"""
+        if self.gui_update_loop_started:
+            return
+        
+        self.gui_update_loop_started = True
+        self._gui_update_tick()
+    
+    def _gui_update_tick(self):
+        """单次GUI更新并计划下一次"""
+        delay = self.update_interval
+        now = datetime.now()
+        should_reset_failures = False
+        
+        # 如果一段时间没有失败，标记重置
+        if (
+            self.gui_last_failure_ts 
+            and (now - self.gui_last_failure_ts).total_seconds() * 1000 >= self.gui_backoff_reset_ms
+        ):
+            should_reset_failures = True
+        
+        try:
+            self.update_gui()
+        except Exception as e:
+            self.gui_update_failures += 1
+            self.gui_last_failure_ts = now
+            self.log_message(f"GUI调度失败: {e}", "ERROR")
+            if self.gui_update_failures >= self.gui_failure_threshold:
+                exponent = self.gui_update_failures - self.gui_failure_threshold + 1
+                computed_delay = self.update_interval * (self.gui_backoff_multiplier ** exponent)
+                computed_delay = max(computed_delay, self.gui_backoff_min_delay)
+                delay = min(computed_delay, self.gui_backoff_max_delay)
+        else:
+            should_reset_failures = True
+        
+        finally:
+            if should_reset_failures and self.gui_update_failures:
+                self.gui_update_failures = 0
+                self.gui_last_failure_ts = None
+            # 使用after定时触发下一次更新
+            self.root.after(delay, self._gui_update_tick)
+    
     def schedule_trading_cycle(self):
         """计划交易循环"""
         if self.is_running:
@@ -6408,9 +6466,25 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
         except Exception as e:
             self.log_message(f"显示风控设置失败: {e}", "ERROR")
     
-    def run_analysis(self):
+    def analyze_market_trend(self):
+        """市场趋势分析入口"""
+        return self.run_analysis("市场趋势分析")
+    
+    def analyze_risk(self):
+        """风险分析入口"""
+        return self.run_analysis("风险分析")
+    
+    def analyze_models(self):
+        """模型评估入口"""
+        return self.run_analysis("模型评估")
+    
+    def analyze_data_quality(self):
+        """数据质量分析入口"""
+        return self.run_analysis("数据质量分析")
+    
+    def run_analysis(self, analysis_type="综合分析"):
         """运行分析"""
-        self.log_message("开始运行分析...", "INFO")
+        self.log_message(f"开始{analysis_type}...", "INFO")
         
         # 在后台运行分析
         def analysis_thread():
@@ -6421,6 +6495,7 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
                 
                 # 分析结果
                 analysis_result = {
+                    'analysis_type': analysis_type,
                     'market_trend': np.random.choice(['上涨', '下跌', '震荡']),
                     'volatility': np.random.uniform(0.01, 0.05),
                     'sentiment_score': np.random.uniform(0.3, 0.8),
@@ -6451,7 +6526,8 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
             info = f"""
 市场分析报告
 ==============
-分析���间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+分析时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+分析类型: {result.get('analysis_type', '综合分析')}
             
 市场趋势: {result['market_trend']}
 波动率: {result['volatility']:.2%}
