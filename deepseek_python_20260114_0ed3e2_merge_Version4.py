@@ -384,9 +384,18 @@ class BinanceClient:
                 timeout=5
             )
             data = response.json()
-            if isinstance(data, dict) and 'price' in data:
-                return float(data['price'])
-            raise KeyError("price")
+            
+            # 支持多种返回格式，优先解析价格字段
+            if isinstance(data, dict):
+                price_val = data.get('price') or data.get('lastPrice')
+                if price_val is not None:
+                    return float(price_val)
+            elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                price_val = data[0].get('price') or data[0].get('lastPrice')
+                if price_val is not None:
+                    return float(price_val)
+            
+            raise KeyError("price_not_found")
         except Exception as e:
             logger.error(f"获取价格失败: {e}")
             # 使用缓存或模拟价格
@@ -1213,6 +1222,16 @@ class CompleteDataManager:
                 return pd.DataFrame()
             
             price_df = self.historical_data['price']['1d'].copy()
+            if not isinstance(price_df.index, pd.DatetimeIndex):
+                if 'open_time' in price_df.columns:
+                    price_df['open_time'] = pd.to_datetime(price_df['open_time'])
+                    price_df.set_index('open_time', inplace=True)
+                elif 'timestamp' in price_df.columns:
+                    price_df['timestamp'] = pd.to_datetime(price_df['timestamp'])
+                    price_df.set_index('timestamp', inplace=True)
+                else:
+                    price_df.index = pd.to_datetime(price_df.index)
+            price_df.sort_index(inplace=True)
             
             # 合并其他数据源
             feature_dfs = [price_df]
@@ -1241,7 +1260,7 @@ class CompleteDataManager:
                 features_df = features_df.join(df, how='left', rsuffix=f'_{df.columns[0] if len(df.columns) > 0 else "x"}')
             
             # 填充缺失值
-            features_df = features_df.fillna(method='ffill').fillna(method='bfill').fillna(0)
+            features_df = features_df.ffill().bfill().fillna(0)
             
             # 限制回看天数
             if lookback_days > 0:
@@ -1407,6 +1426,7 @@ class AdvancedFeatureEngineer:
             base_price = 0.08
             returns = np.random.normal(0, 0.02, len(dates))
             prices = base_price * np.exp(np.cumsum(returns))
+            price_series = pd.Series(prices, index=dates)
             
             # 生成技术指标
             df = pd.DataFrame({
@@ -1416,9 +1436,9 @@ class AdvancedFeatureEngineer:
                 'low': prices * (1 - np.random.uniform(0, 0.01, len(dates))),
                 'close': prices,
                 'volume': np.random.lognormal(10, 1, len(dates)) * 10000,
-                'SMA_20': prices.rolling(window=20).mean(),
-                'EMA_12': prices.ewm(span=12).mean(),
-                'EMA_26': prices.ewm(span=26).mean(),
+                'SMA_20': price_series.rolling(window=20, min_periods=20).mean(),
+                'EMA_12': price_series.ewm(span=12, min_periods=12).mean(),
+                'EMA_26': price_series.ewm(span=26, min_periods=26).mean(),
                 'RSI': np.random.uniform(30, 70, len(dates)),
                 'MACD': np.random.uniform(-0.001, 0.001, len(dates)),
                 'BB_upper': prices * 1.02,
@@ -1438,7 +1458,7 @@ class AdvancedFeatureEngineer:
             })
             
             df.set_index('timestamp', inplace=True)
-            df = df.fillna(method='ffill').fillna(0)
+            df = df.ffill().fillna(0)
             
             return df
             
@@ -1536,13 +1556,26 @@ class AdvancedFeatureEngineer:
     
     def _create_timeseries_features(self, df):
         """创建时间序列特征"""
+        df = df.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors='coerce')
+        original_len = len(df)
+        df = df[df.index.notna()]
+        dropped = original_len - len(df)
+        if dropped > 0:
+            logger.warning(f"时间索引转换失败，已丢弃 {dropped} 条无效记录")
+        
+        if df.empty:
+            return pd.DataFrame()
+        
         features = pd.DataFrame(index=df.index)
         
         # 时间特征
         features['hour'] = df.index.hour
         features['day_of_week'] = df.index.dayofweek
         features['day_of_month'] = df.index.day
-        features['week_of_year'] = df.index.isocalendar().week
+        calendar_index = df.index.isocalendar()
+        features['week_of_year'] = calendar_index.week
         features['month'] = df.index.month
         features['quarter'] = df.index.quarter
         
@@ -3356,6 +3389,7 @@ class CompleteTradingGUI:
         # 设置窗口
         self.root.title("DOGE多因子量化交易系统 - 完整版")
         self.root.geometry("1200x800")
+        self.root.minsize(1200, 800)
         
         # 设置图标
         try:
@@ -3420,13 +3454,13 @@ class CompleteTradingGUI:
         
         # 字体（调整为稍小以适配 1200x800 窗口）
         self.fonts = {
-            'title': tkFont.Font(family="Microsoft YaHei", size=16, weight="bold"),
-            'subtitle': tkFont.Font(family="Microsoft YaHei", size=13, weight="bold"),
-            'heading': tkFont.Font(family="Microsoft YaHei", size=11, weight="bold"),
-            'normal': tkFont.Font(family="Microsoft YaHei", size=10),
-            'small': tkFont.Font(family="Microsoft YaHei", size=9),
-            'mono': tkFont.Font(family="Consolas", size=9),
-            'mono_bold': tkFont.Font(family="Consolas", size=9, weight="bold")
+            'title': tkFont.Font(family="Arial", size=16, weight="bold"),
+            'subtitle': tkFont.Font(family="Arial", size=13, weight="bold"),
+            'heading': tkFont.Font(family="Arial", size=11, weight="bold"),
+            'normal': tkFont.Font(family="Arial", size=10),
+            'small': tkFont.Font(family="Arial", size=9),
+            'mono': tkFont.Font(family="Courier New", size=9),
+            'mono_bold': tkFont.Font(family="Courier New", size=9, weight="bold")
         }
         
         # 配置ttk样式
@@ -4742,12 +4776,34 @@ class CompleteTradingGUI:
             foreground=self.colors['text_muted']
         )
         resource_label.pack(side=tk.RIGHT)
+        
+        # 快捷控制按钮
+        button_holder = ttk.Frame(control_frame)
+        button_holder.pack(side=tk.RIGHT, padx=(10, 0))
+        
+        self.widgets['stop_button_footer'] = ttk.Button(
+            button_holder,
+            text="停止交易",
+            command=self.stop_trading_system,
+            style="Danger.TButton",
+            state="disabled"
+        )
+        self.widgets['stop_button_footer'].pack(side=tk.RIGHT, padx=(5, 0))
+        
+        self.widgets['start_button_footer'] = ttk.Button(
+            button_holder,
+            text="开始交易",
+            command=self.start_trading_system,
+            style="Success.TButton"
+        )
+        self.widgets['start_button_footer'].pack(side=tk.RIGHT, padx=(0, 5))
     
     def initialize_system(self):
         """初始化系统"""
         self.variables['system_status'].set("系统初始化中...")
         self.variables['status_message'].set("正在初始化系统...")
         self.log_message("开始系统初始化...", "INFO")
+        self._set_trading_buttons_state("disabled", "disabled")
         
         # 在后台线程中初始化
         def init_thread():
@@ -4807,7 +4863,7 @@ class CompleteTradingGUI:
         self.log_message("系统初始化完成，准备就绪", "SUCCESS")
         
         # 启用开始按钮
-        self.widgets['start_button'].configure(state="normal")
+        self._set_trading_buttons_state("normal", "disabled")
     
     def on_system_init_failed(self, error_msg):
         """系统初始化失败回调"""
@@ -4951,6 +5007,15 @@ class CompleteTradingGUI:
                 value = getattr(config, key, 0)
                 self.widgets[widget_key].set(str(value))
     
+    def _set_trading_buttons_state(self, start_state: str, stop_state: str):
+        """统一更新开始/停止按钮状态"""
+        for key in ['start_button', 'start_button_footer']:
+            if key in self.widgets:
+                self.widgets[key].configure(state=start_state)
+        for key in ['stop_button', 'stop_button_footer']:
+            if key in self.widgets:
+                self.widgets[key].configure(state=stop_state)
+    
     def start_trading_system(self):
         """启动交易系统"""
         if not self.is_initialized:
@@ -4967,8 +5032,7 @@ class CompleteTradingGUI:
         self.variables['status_message'].set("交易系统运行中...")
         
         # 更新按钮状态
-        self.widgets['start_button'].configure(state="disabled")
-        self.widgets['stop_button'].configure(state="normal")
+        self._set_trading_buttons_state("disabled", "normal")
         
         # 启动交易循环
         self.schedule_trading_cycle()
@@ -4987,8 +5051,7 @@ class CompleteTradingGUI:
         self.variables['status_message'].set("交易系统已停止")
         
         # 更新按钮状态
-        self.widgets['start_button'].configure(state="normal")
-        self.widgets['stop_button'].configure(state="disabled")
+        self._set_trading_buttons_state("normal", "disabled")
         
         # 停止数据流
         self.data_manager.stop_real_time_stream()
@@ -6435,6 +6498,77 @@ DOGE余额: {position_summary['balance']['DOGE']:.0f} DOGE
                 self.root.after(0, lambda: self.log_message(f"分析失败: {e}", "ERROR"))
         
         threading.Thread(target=analysis_thread, daemon=True).start()
+    
+    def analyze_market_trend(self):
+        """市场趋势分析"""
+        try:
+            price_df = self.data_manager.historical_data['price'].get('1d', pd.DataFrame())
+            if price_df.empty:
+                self.log_message("日线数据为空，使用默认分析", "WARNING")
+                return self.run_analysis()
+            
+            if 'close' in price_df.columns:
+                close = price_df['close'].tail(60)
+            else:
+                close = price_df.iloc[:, 3].tail(60)
+            
+            trend = close.pct_change().mean()
+            volatility = close.pct_change().std()
+            
+            result = {
+                'market_trend': '上涨' if trend > 0 else '下跌' if trend < 0 else '震荡',
+                'volatility': float(volatility if pd.notna(volatility) else 0),
+                'sentiment_score': np.random.uniform(0.3, 0.8),
+                'recommendation': '买入' if trend > 0 else '卖出' if trend < 0 else '持有',
+                'confidence': min(max(abs(trend) * 500, 0.3), 0.9)
+            }
+            
+            self.show_analysis_result(result)
+        except Exception as e:
+            self.log_message(f"市场趋势分析失败: {e}", "ERROR")
+            messagebox.showerror("市场趋势分析失败", str(e))
+    
+    def analyze_risk(self):
+        """风险分析"""
+        try:
+            metrics = self.trading_engine.risk_metrics
+            info = "\n".join([f"{k}: {v}" for k, v in metrics.items()])
+            messagebox.showinfo("风险分析", f"当前风险参数:\n{info}")
+        except Exception as e:
+            self.log_message(f"风险分析失败: {e}", "ERROR")
+            messagebox.showerror("风险分析失败", str(e))
+    
+    def analyze_models(self):
+        """模型评估"""
+        try:
+            performance = self.model_manager.model_performance
+            lines = []
+            for name, perf in performance.items():
+                acc = perf.get('accuracy', 0)
+                lines.append(f"{name}: 准确率 {acc:.3f}")
+            if not lines:
+                lines.append("暂无模型性能数据")
+            messagebox.showinfo("模型评估", "\n".join(lines))
+        except Exception as e:
+            self.log_message(f"模型评估失败: {e}", "ERROR")
+            messagebox.showerror("模型评估失败", str(e))
+    
+    def analyze_data_quality(self):
+        """数据质量分析"""
+        try:
+            parts = []
+            price_1d = self.data_manager.historical_data['price'].get('1d', pd.DataFrame())
+            parts.append(f"日线价格: {len(price_1d)} 条")
+            social = self.data_manager.historical_data['social']
+            parts.append(f"社交数据: {len(social)} 条")
+            onchain = self.data_manager.historical_data['onchain']
+            parts.append(f"链上数据: {len(onchain)} 条")
+            derivatives = self.data_manager.historical_data['derivatives']
+            parts.append(f"衍生品数据: {len(derivatives)} 条")
+            messagebox.showinfo("数据质量", "\n".join(parts))
+        except Exception as e:
+            self.log_message(f"数据质量分析失败: {e}", "ERROR")
+            messagebox.showerror("数据质量分析失败", str(e))
     
     def show_analysis_result(self, result):
         """显示分析结果"""
